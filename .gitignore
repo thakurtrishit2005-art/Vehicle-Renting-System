@@ -1,0 +1,20 @@
+# Build output
+backend/build/
+build/
+
+# Local backups
+*.backup
+*.step1-backup
+*.pre-deploy-backup
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Database dumps
+*.dump
+*.sql.gz
