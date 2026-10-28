@@ -101,7 +101,6 @@ crow::response jsonResponse(
 {
     crow::response response(status);
     response.add_header("Content-Type", "application/json");
-    addCorsHeaders(response);
     response.body = data.dump();
     return response;
 }
