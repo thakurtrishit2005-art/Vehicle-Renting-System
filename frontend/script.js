@@ -1,8 +1,45 @@
 
 "use strict";
 
-// The C++ backend reads vehicle inventory from PostgreSQL.
-const API_BASE_URL = "http://localhost:18080/api";
+// Set window.VELORENT_API_URL in frontend/config.js for deployment.
+// Example: "https://your-backend.onrender.com"
+// Local development uses the C++ backend on port 18080.
+const API_SERVER_URL = (
+  window.VELORENT_API_URL || "http://localhost:18080"
+).replace(/\/+$/, "");
+
+const API_BASE_URL = `${API_SERVER_URL}/api`;
+
+// Keep the admin key in memory only; never hardcode it in this file.
+let adminApiKey = "";
+
+function getAdminApiKey() {
+  if (adminApiKey) {
+    return adminApiKey;
+  }
+
+  const enteredKey = window.prompt(
+    "Enter the admin API key to manage vehicle inventory:"
+  );
+
+  if (!enteredKey || !enteredKey.trim()) {
+    throw new Error("Admin key is required to add a vehicle.");
+  }
+
+  adminApiKey = enteredKey.trim();
+  return adminApiKey;
+}
+
+function clearAdminApiKey() {
+  adminApiKey = "";
+}
+
+function adminHeaders(extraHeaders = {}) {
+  return {
+    ...extraHeaders,
+    "X-Admin-Key": getAdminApiKey()
+  };
+}
 
 // Presentation information not yet stored in the database.
 // Vehicle prices, names, categories and availability come from the API.
@@ -107,13 +144,12 @@ function mapApiVehicle(apiVehicle) {
   const code = apiVehicle.vehicle_code;
   const presentation = vehiclePresentation[code] || {};
 
-  const backendBaseURL = API_BASE_URL.replace(/\/api$/, "");
   const savedImage = apiVehicle.image_url || "";
 
   const image = savedImage
     ? (/^https?:\/\//i.test(savedImage)
         ? savedImage
-        : `${backendBaseURL}${savedImage}`)
+        : `${API_SERVER_URL}${savedImage}`)
     : (presentation.image || "");
 
   return {
@@ -151,7 +187,6 @@ async function loadVehicles() {
     }
 
     vehicles = data.vehicles.map(mapApiVehicle);
-
     renderVehicles();
 
     if (vehicles.length === 0) {
@@ -165,7 +200,7 @@ async function loadVehicles() {
 
     resultsCount.textContent = "Vehicle inventory unavailable";
     showToast(
-      "Cannot load vehicles. Make sure the C++ backend is running on port 18080."
+      "Cannot load vehicles. Check that the backend URL is correct and the API is running."
     );
   }
 }
@@ -426,7 +461,6 @@ function openBooking(vehicleCode) {
   formError.textContent = "";
 
   bookingVehicleCode.value = vehicle.code;
-
   selectedVehicleElement.replaceChildren();
 
   if (vehicle.image) {
@@ -559,7 +593,7 @@ pickupDateInput.addEventListener("change", () => {
 
 returnDateInput.addEventListener("change", updateEstimate);
 
-// The form currently calculates a demo estimate only.
+// This form calculates a demo estimate only.
 // It does not create a database booking.
 bookingForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -646,7 +680,7 @@ mainNav.querySelectorAll("a").forEach((link) => {
   });
 });
 
-// Add a vehicle: upload its image, save its details, then refresh inventory.
+// Add a vehicle: upload its image, save its details, refresh inventory.
 const addVehicleForm = document.getElementById("addVehicleForm");
 const vehicleImageInput = document.getElementById("vehicleImage");
 const vehicleFormStatus = document.getElementById("vehicleFormStatus");
@@ -662,6 +696,9 @@ addVehicleForm.addEventListener("submit", async (event) => {
   let uploadedImageURL = "";
 
   try {
+    // Prompt for the admin key when needed.
+    getAdminApiKey();
+
     const formData = new FormData(addVehicleForm);
     const imageFile = vehicleImageInput.files[0];
 
@@ -673,22 +710,31 @@ addVehicleForm.addEventListener("submit", async (event) => {
       throw new Error("The image must be 5 MB or smaller.");
     }
 
+    const imageFormData = new FormData();
+    imageFormData.append("image", imageFile);
+
     const uploadResponse = await fetch(
       `${API_BASE_URL}/upload-image`,
       {
         method: "POST",
-        body: (() => {
-          const data = new FormData();
-          data.append("image", imageFile);
-          return data;
-        })()
+        headers: adminHeaders(),
+        body: imageFormData
       }
     );
 
     const uploadResult = await uploadResponse.json();
 
+    if (uploadResponse.status === 401) {
+      clearAdminApiKey();
+      throw new Error(
+        "Admin key rejected. Submit the form again and enter the correct key."
+      );
+    }
+
     if (!uploadResponse.ok) {
-      throw new Error(uploadResult.error || "Image upload failed.");
+      throw new Error(
+        uploadResult.error || `Image upload failed (HTTP ${uploadResponse.status}).`
+      );
     }
 
     uploadedImageURL = uploadResult.image_url;
@@ -706,16 +752,25 @@ addVehicleForm.addEventListener("submit", async (event) => {
 
     const response = await fetch(`${API_BASE_URL}/vehicles`, {
       method: "POST",
-      headers: {
+      headers: adminHeaders({
         "Content-Type": "text/plain"
-      },
+      }),
       body: JSON.stringify(vehicleData)
     });
 
     const result = await response.json();
 
+    if (response.status === 401) {
+      clearAdminApiKey();
+      throw new Error(
+        "Admin key rejected. Submit the form again and enter the correct key."
+      );
+    }
+
     if (!response.ok) {
-      throw new Error(result.error || "Could not save the vehicle.");
+      throw new Error(
+        result.error || `Could not save vehicle (HTTP ${response.status}).`
+      );
     }
 
     addVehicleForm.reset();
@@ -731,9 +786,7 @@ addVehicleForm.addEventListener("submit", async (event) => {
   } catch (error) {
     console.error("Vehicle creation failed:", error);
 
-    vehicleFormStatus.textContent =
-      `Error: ${error.message}`;
-
+    vehicleFormStatus.textContent = `Error: ${error.message}`;
     showToast(error.message);
 
     if (uploadedImageURL) {
