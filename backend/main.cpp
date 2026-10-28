@@ -54,6 +54,58 @@ std::string getAllowedOrigin()
     return "http://localhost:5500";
 }
 
+void addCorsHeaders(crow::response& response)
+{
+    response.add_header(
+        "Access-Control-Allow-Origin", getAllowedOrigin());
+
+    response.add_header(
+        "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+
+    response.add_header(
+        "Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
+
+    response.add_header("Vary", "Origin");
+    response.add_header("X-Content-Type-Options", "nosniff");
+}
+
+// Apply CORS headers to every response, including preflight requests.
+struct CorsMiddleware
+{
+    struct context {};
+
+    void before_handle(
+        crow::request& req,
+        crow::response& res,
+        context&)
+    {
+        if (req.method == crow::HTTPMethod::OPTIONS)
+        {
+            res.code = 204;
+            addCorsHeaders(res);
+            res.end();
+        }
+    }
+
+    void after_handle(
+        crow::request&,
+        crow::response& res,
+        context&)
+    {
+        addCorsHeaders(res);
+    }
+};
+
+crow::response jsonResponse(
+    int status, const crow::json::wvalue& data)
+{
+    crow::response response(status);
+    response.add_header("Content-Type", "application/json");
+    addCorsHeaders(response);
+    response.body = data.dump();
+    return response;
+}
+
 bool isAuthorizedAdmin(const crow::request& req)
 {
     const char* expected = std::getenv("ADMIN_API_KEY");
@@ -78,35 +130,6 @@ std::filesystem::path getUploadDirectory()
         / "uploads" / "vehicles";
 }
 
-void addCorsHeaders(crow::response& response)
-{
-    response.add_header(
-        "Access-Control-Allow-Origin", getAllowedOrigin());
-    response.add_header(
-        "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    response.add_header(
-        "Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
-    response.add_header("Vary", "Origin");
-    response.add_header("X-Content-Type-Options", "nosniff");
-}
-
-crow::response jsonResponse(
-    int status, const crow::json::wvalue& data)
-{
-    crow::response response(status);
-    response.add_header("Content-Type", "application/json");
-    addCorsHeaders(response);
-    response.body = data.dump();
-    return response;
-}
-
-crow::response preflightResponse()
-{
-    crow::response response(204);
-    addCorsHeaders(response);
-    return response;
-}
-
 bool hasStringField(
     const crow::json::rvalue& body,
     const char* name)
@@ -117,8 +140,9 @@ bool hasStringField(
 
 int main()
 {
-    crow::SimpleApp app;
+    crow::App<CorsMiddleware> app;
 
+    // Health check
     CROW_ROUTE(app, "/api/health")
     ([]
     {
@@ -128,11 +152,13 @@ int main()
         {
             pqxx::connection connection(
                 getDatabaseConnectionString());
+
             pqxx::read_transaction transaction(connection);
             transaction.exec("SELECT 1");
 
             result["status"] = "ok";
             result["database"] = "connected";
+
             return jsonResponse(200, result);
         }
         catch (const std::exception& error)
@@ -142,10 +168,12 @@ int main()
 
             result["status"] = "error";
             result["database"] = "unavailable";
+
             return jsonResponse(503, result);
         }
     });
 
+    // Retrieve vehicles
     CROW_ROUTE(app, "/api/vehicles")
     ([]
     {
@@ -153,6 +181,7 @@ int main()
         {
             pqxx::connection connection(
                 getDatabaseConnectionString());
+
             pqxx::read_transaction transaction(connection);
 
             const auto rows = transaction.exec(
@@ -165,19 +194,27 @@ int main()
             for (const auto& row : rows)
             {
                 crow::json::wvalue vehicle;
+
                 vehicle["vehicle_code"] =
                     row["vehicle_code"].as<std::string>();
+
                 vehicle["brand"] =
                     row["brand"].as<std::string>();
+
                 vehicle["model"] =
                     row["model"].as<std::string>();
+
                 vehicle["category"] =
                     row["category"].as<std::string>();
+
                 vehicle["daily_rate"] =
                     row["daily_rate"].as<double>();
+
                 vehicle["is_available"] =
                     row["is_available"].as<bool>();
-                vehicle["seats"] = row["seats"].as<int>();
+
+                vehicle["seats"] =
+                    row["seats"].as<int>();
 
                 vehicle["engine_cc"] = row["engine_cc"].is_null()
                     ? 0 : row["engine_cc"].as<int>();
@@ -194,6 +231,7 @@ int main()
             crow::json::wvalue result;
             result["count"] = static_cast<int>(vehicles.size());
             result["vehicles"] = std::move(vehicles);
+
             return jsonResponse(200, result);
         }
         catch (const std::exception& error)
@@ -203,17 +241,12 @@ int main()
 
             crow::json::wvalue result;
             result["error"] = "Unable to retrieve vehicle listings.";
+
             return jsonResponse(500, result);
         }
     });
 
-    CROW_ROUTE(app, "/api/vehicles")
-        .methods(crow::HTTPMethod::OPTIONS)
-    ([]
-    {
-        return preflightResponse();
-    });
-
+    // Create vehicle
     CROW_ROUTE(app, "/api/vehicles")
         .methods(crow::HTTPMethod::POST)
     ([](const crow::request& req)
@@ -293,6 +326,7 @@ int main()
 
             pqxx::connection connection(
                 getDatabaseConnectionString());
+
             pqxx::work transaction(connection);
 
             transaction.exec_params(
@@ -308,6 +342,7 @@ int main()
 
             result["message"] = "Vehicle created successfully.";
             result["vehicle_code"] = vehicleCode;
+
             return jsonResponse(201, result);
         }
         catch (const std::exception& error)
@@ -316,77 +351,12 @@ int main()
                       << error.what() << '\n';
 
             result["error"] = "Could not create vehicle.";
+
             return jsonResponse(400, result);
         }
     });
 
-    CROW_ROUTE(app, "/api/upload-image")
-        .methods(crow::HTTPMethod::OPTIONS)
-    ([]
-    {
-        return preflightResponse();
-    });
-
-    CROW_ROUTE(app, "/uploads/vehicles/<string>")
-    ([](const std::string& filename)
-    {
-        crow::response response;
-
-        if (filename.empty() || filename.find("..") != std::string::npos)
-        {
-            response.code = 400;
-            response.body = "Invalid image filename";
-            addCorsHeaders(response);
-            return response;
-        }
-
-        for (unsigned char ch : filename)
-        {
-            if (!std::isalnum(ch) && ch != '.' &&
-                ch != '_' && ch != '-')
-            {
-                response.code = 400;
-                response.body = "Invalid image filename";
-                addCorsHeaders(response);
-                return response;
-            }
-        }
-
-        const std::filesystem::path path =
-            getUploadDirectory() / filename;
-
-        std::ifstream file(path, std::ios::binary);
-
-        if (!file)
-        {
-            response.code = 404;
-            response.body = "Image not found";
-            addCorsHeaders(response);
-            return response;
-        }
-
-        response.body = std::string(
-            std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>());
-
-        const std::string ext = path.extension().string();
-
-        if (ext == ".jpg" || ext == ".jpeg")
-            response.set_header("Content-Type", "image/jpeg");
-        else if (ext == ".png")
-            response.set_header("Content-Type", "image/png");
-        else if (ext == ".webp")
-            response.set_header("Content-Type", "image/webp");
-        else
-        {
-            response.code = 415;
-            response.body = "Unsupported image type";
-        }
-
-        addCorsHeaders(response);
-        return response;
-    });
-
+    // Upload image
     CROW_ROUTE(app, "/api/upload-image")
         .methods(crow::HTTPMethod::POST)
     ([](const crow::request& req)
@@ -405,7 +375,9 @@ int main()
 
             if (req.body.size() > maxImageSize + 64 * 1024)
             {
-                result["error"] = "Request too large; image limit is 5 MB.";
+                result["error"] =
+                    "Request too large; image limit is 5 MB.";
+
                 return jsonResponse(413, result);
             }
 
@@ -415,17 +387,22 @@ int main()
             if (imagePart.body.empty() ||
                 imagePart.body.size() > maxImageSize)
             {
-                result["error"] = "Missing image or image exceeds 5 MB.";
+                result["error"] =
+                    "Missing image or image exceeds 5 MB.";
+
                 return jsonResponse(413, result);
             }
 
             const auto& disposition =
                 imagePart.get_header_object("Content-Disposition");
+
             const auto it = disposition.params.find("filename");
 
             if (it == disposition.params.end() || it->second.empty())
             {
-                result["error"] = "Uploaded file must have a filename.";
+                result["error"] =
+                    "Uploaded file must have a filename.";
+
                 return jsonResponse(400, result);
             }
 
@@ -434,7 +411,8 @@ int main()
 
             std::transform(
                 extension.begin(), extension.end(), extension.begin(),
-                [](unsigned char c) {
+                [](unsigned char c)
+                {
                     return static_cast<char>(std::tolower(c));
                 });
 
@@ -472,13 +450,17 @@ int main()
             }
             else
             {
-                result["error"] = "Only JPEG, PNG, and WebP are accepted.";
+                result["error"] =
+                    "Only JPEG, PNG, and WebP are accepted.";
+
                 return jsonResponse(400, result);
             }
 
             if (!valid)
             {
-                result["error"] = "Image contents do not match file type.";
+                result["error"] =
+                    "Image contents do not match file type.";
+
                 return jsonResponse(400, result);
             }
 
@@ -493,6 +475,7 @@ int main()
             std::filesystem::create_directories(directory);
 
             const auto destination = directory / filename;
+
             std::ofstream output(
                 destination, std::ios::binary | std::ios::out);
 
@@ -505,18 +488,23 @@ int main()
             output.write(
                 bytes.data(),
                 static_cast<std::streamsize>(bytes.size()));
+
             output.close();
 
             if (!output)
             {
                 std::filesystem::remove(destination);
-                result["error"] = "Image was not saved completely.";
+
+                result["error"] =
+                    "Image was not saved completely.";
+
                 return jsonResponse(500, result);
             }
 
             result["message"] = "Image uploaded successfully.";
             result["filename"] = filename;
             result["image_url"] = "/uploads/vehicles/" + filename;
+
             return jsonResponse(201, result);
         }
         catch (const std::exception& error)
@@ -525,8 +513,66 @@ int main()
                       << error.what() << '\n';
 
             result["error"] = "The upload could not be processed.";
+
             return jsonResponse(400, result);
         }
+    });
+
+    // Serve uploaded images
+    CROW_ROUTE(app, "/uploads/vehicles/<string>")
+    ([](const std::string& filename)
+    {
+        crow::response response;
+
+        if (filename.empty() || filename.find("..") != std::string::npos)
+        {
+            response.code = 400;
+            response.body = "Invalid image filename";
+            return response;
+        }
+
+        for (unsigned char ch : filename)
+        {
+            if (!std::isalnum(ch) && ch != '.' &&
+                ch != '_' && ch != '-')
+            {
+                response.code = 400;
+                response.body = "Invalid image filename";
+                return response;
+            }
+        }
+
+        const std::filesystem::path path =
+            getUploadDirectory() / filename;
+
+        std::ifstream file(path, std::ios::binary);
+
+        if (!file)
+        {
+            response.code = 404;
+            response.body = "Image not found";
+            return response;
+        }
+
+        response.body = std::string(
+            std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>());
+
+        const std::string ext = path.extension().string();
+
+        if (ext == ".jpg" || ext == ".jpeg")
+            response.set_header("Content-Type", "image/jpeg");
+        else if (ext == ".png")
+            response.set_header("Content-Type", "image/png");
+        else if (ext == ".webp")
+            response.set_header("Content-Type", "image/webp");
+        else
+        {
+            response.code = 415;
+            response.body = "Unsupported image type";
+        }
+
+        return response;
     });
 
     const int port = getPort();
