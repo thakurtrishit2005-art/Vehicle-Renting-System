@@ -3,83 +3,122 @@
 #include <crow/multipart.h>
 #include <pqxx/pqxx>
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
-#include <chrono>
 
 std::string getDatabaseConnectionString()
 {
-    // Later, hosting can provide this through an environment variable.
-    const char* databaseUrl = std::getenv("DATABASE_URL");
+    const char* value = std::getenv("DATABASE_URL");
 
-    if (databaseUrl != nullptr && databaseUrl[0] != '\0')
-    {
-        return databaseUrl;
-    }
+    if (value && value[0] != '\0')
+        return value;
 
-    // Local development uses your existing PostgreSQL database.
     return "dbname=vehicle_rental";
 }
 
 int getPort()
 {
-    const char* portValue = std::getenv("PORT");
+    const char* value = std::getenv("PORT");
 
-    if (portValue != nullptr && portValue[0] != '\0')
+    if (value && value[0] != '\0')
     {
         try
         {
-            int port = std::stoi(portValue);
-
+            const int port = std::stoi(value);
             if (port >= 1 && port <= 65535)
-            {
                 return port;
-            }
         }
         catch (...)
         {
-            // Use the default port if PORT is invalid.
         }
     }
 
     return 18080;
 }
 
+std::string getAllowedOrigin()
+{
+    const char* value = std::getenv("FRONTEND_ORIGIN");
+
+    if (value && value[0] != '\0')
+        return value;
+
+    return "http://localhost:5500";
+}
+
+bool isAuthorizedAdmin(const crow::request& req)
+{
+    const char* expected = std::getenv("ADMIN_API_KEY");
+
+    if (!expected || expected[0] == '\0')
+        return false;
+
+    const std::string supplied =
+        req.get_header_value("X-Admin-Key");
+
+    return !supplied.empty() && supplied == expected;
+}
+
+std::filesystem::path getUploadDirectory()
+{
+    const char* value = std::getenv("UPLOAD_DIR");
+
+    if (value && value[0] != '\0')
+        return std::filesystem::path(value);
+
+    return std::filesystem::path(__FILE__).parent_path()
+        / "uploads" / "vehicles";
+}
+
+void addCorsHeaders(crow::response& response)
+{
+    response.add_header(
+        "Access-Control-Allow-Origin", getAllowedOrigin());
+    response.add_header(
+        "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.add_header(
+        "Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
+    response.add_header("Vary", "Origin");
+    response.add_header("X-Content-Type-Options", "nosniff");
+}
 
 crow::response jsonResponse(
-    int status,
-    const crow::json::wvalue& data)
+    int status, const crow::json::wvalue& data)
 {
     crow::response response(status);
-
     response.add_header("Content-Type", "application/json");
-    response.add_header(
-        "Access-Control-Allow-Origin",
-        "http://localhost:5500"
-    );
-    response.add_header(
-        "Access-Control-Allow-Methods",
-        "GET, POST, OPTIONS"
-    );
-    response.add_header(
-        "Access-Control-Allow-Headers",
-        "Content-Type"
-    );
+    addCorsHeaders(response);
     response.body = data.dump();
     return response;
 }
 
+crow::response preflightResponse()
+{
+    crow::response response(204);
+    addCorsHeaders(response);
+    return response;
+}
+
+bool hasStringField(
+    const crow::json::rvalue& body,
+    const char* name)
+{
+    return body.has(name) &&
+        body[name].t() == crow::json::type::String;
+}
 
 int main()
 {
     crow::SimpleApp app;
 
-    // Endpoint 1: basic server and database health check.
     CROW_ROUTE(app, "/api/health")
     ([]
     {
@@ -88,15 +127,12 @@ int main()
         try
         {
             pqxx::connection connection(
-                getDatabaseConnectionString()
-            );
-
+                getDatabaseConnectionString());
             pqxx::read_transaction transaction(connection);
             transaction.exec("SELECT 1");
 
             result["status"] = "ok";
             result["database"] = "connected";
-
             return jsonResponse(200, result);
         }
         catch (const std::exception& error)
@@ -106,77 +142,58 @@ int main()
 
             result["status"] = "error";
             result["database"] = "unavailable";
-
             return jsonResponse(503, result);
         }
     });
 
-    // Endpoint 2: retrieve real vehicle listings from PostgreSQL.
     CROW_ROUTE(app, "/api/vehicles")
     ([]
     {
         try
         {
             pqxx::connection connection(
-                getDatabaseConnectionString()
-            );
-
+                getDatabaseConnectionString());
             pqxx::read_transaction transaction(connection);
 
-            auto rows = transaction.exec(
+            const auto rows = transaction.exec(
                 "SELECT vehicle_code, brand, model, category, daily_rate, "
                 "is_available, seats, engine_cc, image_url, description "
-                "FROM vehicles ORDER BY id"
-            );
+                "FROM vehicles ORDER BY id");
 
-            crow::json::wvalue::list vehicleList;
+            crow::json::wvalue::list vehicles;
 
             for (const auto& row : rows)
             {
                 crow::json::wvalue vehicle;
-
                 vehicle["vehicle_code"] =
                     row["vehicle_code"].as<std::string>();
-
                 vehicle["brand"] =
                     row["brand"].as<std::string>();
-
                 vehicle["model"] =
                     row["model"].as<std::string>();
-
                 vehicle["category"] =
                     row["category"].as<std::string>();
-
                 vehicle["daily_rate"] =
                     row["daily_rate"].as<double>();
-
                 vehicle["is_available"] =
                     row["is_available"].as<bool>();
-
                 vehicle["seats"] = row["seats"].as<int>();
 
-                if (!row["engine_cc"].is_null())
-                {
-                    vehicle["engine_cc"] = row["engine_cc"].as<int>();
-                }
+                vehicle["engine_cc"] = row["engine_cc"].is_null()
+                    ? 0 : row["engine_cc"].as<int>();
 
                 vehicle["image_url"] = row["image_url"].is_null()
-                    ? ""
-                    : row["image_url"].as<std::string>();
+                    ? "" : row["image_url"].as<std::string>();
 
                 vehicle["description"] = row["description"].is_null()
-                    ? ""
-                    : row["description"].as<std::string>();
+                    ? "" : row["description"].as<std::string>();
 
-                vehicleList.push_back(std::move(vehicle));
+                vehicles.push_back(std::move(vehicle));
             }
 
             crow::json::wvalue result;
-            result["count"] =
-                static_cast<int>(vehicleList.size());
-
-            result["vehicles"] = std::move(vehicleList);
-
+            result["count"] = static_cast<int>(vehicles.size());
+            result["vehicles"] = std::move(vehicles);
             return jsonResponse(200, result);
         }
         catch (const std::exception& error)
@@ -185,48 +202,45 @@ int main()
                       << error.what() << '\n';
 
             crow::json::wvalue result;
-            result["error"] =
-                "Unable to retrieve vehicle listings.";
-
+            result["error"] = "Unable to retrieve vehicle listings.";
             return jsonResponse(500, result);
         }
     });
 
-    // Allow browser preflight requests for vehicle creation.
     CROW_ROUTE(app, "/api/vehicles")
         .methods(crow::HTTPMethod::OPTIONS)
     ([]
     {
-        crow::response response(204);
-        response.add_header(
-            "Access-Control-Allow-Origin",
-            "http://localhost:5500"
-        );
-        response.add_header(
-            "Access-Control-Allow-Methods",
-            "GET, POST, OPTIONS"
-        );
-        response.add_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type"
-        );
-        return response;
+        return preflightResponse();
     });
 
-    // Create a vehicle and save it in PostgreSQL.
     CROW_ROUTE(app, "/api/vehicles")
         .methods(crow::HTTPMethod::POST)
     ([](const crow::request& req)
     {
         crow::json::wvalue result;
 
+        if (!isAuthorizedAdmin(req))
+        {
+            result["error"] = "Unauthorized.";
+            return jsonResponse(401, result);
+        }
+
         try
         {
-            auto body = crow::json::load(req.body);
+            const auto body = crow::json::load(req.body);
 
-            if (!body)
+            if (!body ||
+                !hasStringField(body, "brand") ||
+                !hasStringField(body, "model") ||
+                !hasStringField(body, "category") ||
+                !hasStringField(body, "image_url") ||
+                !hasStringField(body, "description") ||
+                !body.has("daily_rate") ||
+                !body.has("seats") ||
+                !body.has("engine_cc"))
             {
-                result["error"] = "Invalid JSON request.";
+                result["error"] = "Invalid or incomplete JSON fields.";
                 return jsonResponse(400, result);
             }
 
@@ -240,17 +254,11 @@ int main()
             const std::string description = body["description"].s();
 
             if (brand.empty() || model.empty() ||
-                description.empty() || imageURL.empty())
-            {
-                result["error"] =
-                    "Complete all fields and upload an image.";
-                return jsonResponse(400, result);
-            }
-
-            if (brand.size() > 100 || model.size() > 100 ||
+                description.empty() || imageURL.empty() ||
+                brand.size() > 100 || model.size() > 100 ||
                 description.size() > 2000)
             {
-                result["error"] = "One or more fields are too long.";
+                result["error"] = "Invalid field values or lengths.";
                 return jsonResponse(400, result);
             }
 
@@ -265,29 +273,26 @@ int main()
                 seats < 1 || seats > 100 ||
                 engineCC < 0 || engineCC > 10000)
             {
-                result["error"] = "Invalid price or vehicle specifications.";
+                result["error"] = "Invalid vehicle specifications.";
                 return jsonResponse(400, result);
             }
 
             if (imageURL.rfind("/uploads/vehicles/", 0) != 0 ||
                 imageURL.find("..") != std::string::npos)
             {
-                result["error"] = "Invalid vehicle image path.";
+                result["error"] = "Invalid image path.";
                 return jsonResponse(400, result);
             }
 
-            const auto timestamp =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()
-                ).count();
-
             const std::string vehicleCode =
-                "VR-" + std::to_string(timestamp);
+                "VR-" + std::to_string(
+                    std::chrono::duration_cast<
+                        std::chrono::milliseconds>(
+                        std::chrono::system_clock::now()
+                            .time_since_epoch()).count());
 
             pqxx::connection connection(
-                getDatabaseConnectionString()
-            );
-
+                getDatabaseConnectionString());
             pqxx::work transaction(connection);
 
             transaction.exec_params(
@@ -296,22 +301,13 @@ int main()
                 "seats, engine_cc, image_url, description, is_available) "
                 "VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, 0), "
                 "$8, $9, TRUE)",
-                vehicleCode,
-                brand,
-                model,
-                category,
-                dailyRate,
-                seats,
-                engineCC,
-                imageURL,
-                description
-            );
+                vehicleCode, brand, model, category, dailyRate,
+                seats, engineCC, imageURL, description);
 
             transaction.commit();
 
             result["message"] = "Vehicle created successfully.";
             result["vehicle_code"] = vehicleCode;
-
             return jsonResponse(201, result);
         }
         catch (const std::exception& error)
@@ -319,253 +315,208 @@ int main()
             std::cerr << "Vehicle creation failed: "
                       << error.what() << '\n';
 
-            result["error"] =
-                "Could not create the vehicle. Check the submitted fields "
-                "and database schema.";
-
+            result["error"] = "Could not create vehicle.";
             return jsonResponse(400, result);
         }
     });
 
-    // Endpoint 3: serve uploaded vehicle images.
+    CROW_ROUTE(app, "/api/upload-image")
+        .methods(crow::HTTPMethod::OPTIONS)
+    ([]
+    {
+        return preflightResponse();
+    });
+
     CROW_ROUTE(app, "/uploads/vehicles/<string>")
     ([](const std::string& filename)
     {
         crow::response response;
 
-        // Only allow safe filenames, not directory paths.
         if (filename.empty() || filename.find("..") != std::string::npos)
         {
             response.code = 400;
             response.body = "Invalid image filename";
+            addCorsHeaders(response);
             return response;
         }
 
-        for (unsigned char character : filename)
+        for (unsigned char ch : filename)
         {
-            if (!std::isalnum(character) &&
-                character != '.' &&
-                character != '_' &&
-                character != '-')
+            if (!std::isalnum(ch) && ch != '.' &&
+                ch != '_' && ch != '-')
             {
                 response.code = 400;
                 response.body = "Invalid image filename";
+                addCorsHeaders(response);
                 return response;
             }
         }
 
-        const std::filesystem::path imageDirectory =
-            std::filesystem::path(__FILE__).parent_path()
-            / "uploads" / "vehicles";
+        const std::filesystem::path path =
+            getUploadDirectory() / filename;
 
-        const std::filesystem::path imagePath =
-            imageDirectory / filename;
+        std::ifstream file(path, std::ios::binary);
 
-        std::ifstream imageFile(imagePath, std::ios::binary);
-
-        if (!imageFile)
+        if (!file)
         {
             response.code = 404;
             response.body = "Image not found";
+            addCorsHeaders(response);
             return response;
         }
 
         response.body = std::string(
-            std::istreambuf_iterator<char>(imageFile),
-            std::istreambuf_iterator<char>()
-        );
+            std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>());
 
-        const std::string extension = imagePath.extension().string();
+        const std::string ext = path.extension().string();
 
-        if (extension == ".jpg" || extension == ".jpeg")
-        {
+        if (ext == ".jpg" || ext == ".jpeg")
             response.set_header("Content-Type", "image/jpeg");
-        }
-        else if (extension == ".png")
-        {
+        else if (ext == ".png")
             response.set_header("Content-Type", "image/png");
-        }
-        else if (extension == ".webp")
-        {
+        else if (ext == ".webp")
             response.set_header("Content-Type", "image/webp");
-        }
         else
         {
-            response.set_header("Content-Type", "application/octet-stream");
+            response.code = 415;
+            response.body = "Unsupported image type";
         }
 
-        response.set_header("X-Content-Type-Options", "nosniff");
+        addCorsHeaders(response);
         return response;
     });
-    
 
-    // Endpoint 4: accept and save an uploaded vehicle image.
     CROW_ROUTE(app, "/api/upload-image")
         .methods(crow::HTTPMethod::POST)
     ([](const crow::request& req)
     {
         crow::json::wvalue result;
 
+        if (!isAuthorizedAdmin(req))
+        {
+            result["error"] = "Unauthorized.";
+            return jsonResponse(401, result);
+        }
+
         try
         {
-            // Limit uploads to 5 MB.
-            constexpr std::size_t maxFileSize = 5 * 1024 * 1024;
+            constexpr std::size_t maxImageSize = 5 * 1024 * 1024;
 
-            if (req.body.size() > maxFileSize + 64 * 1024)
+            if (req.body.size() > maxImageSize + 64 * 1024)
             {
-                result["error"] = "Upload is too large. Maximum image size is 5 MB.";
+                result["error"] = "Request too large; image limit is 5 MB.";
                 return jsonResponse(413, result);
             }
 
             crow::multipart::message form(req);
+            const auto imagePart = form.get_part_by_name("image");
 
-            auto imagePart = form.get_part_by_name("image");
-
-            if (imagePart.body.empty())
+            if (imagePart.body.empty() ||
+                imagePart.body.size() > maxImageSize)
             {
-                result["error"] = "No image was provided. Use the form field name 'image'.";
-                return jsonResponse(400, result);
-            }
-
-            if (imagePart.body.size() > maxFileSize)
-            {
-                result["error"] = "Image must be 5 MB or smaller.";
+                result["error"] = "Missing image or image exceeds 5 MB.";
                 return jsonResponse(413, result);
             }
 
-            // Read the browser-provided filename from Content-Disposition.
             const auto& disposition =
                 imagePart.get_header_object("Content-Disposition");
+            const auto it = disposition.params.find("filename");
 
-            auto filenameIt = disposition.params.find("filename");
-
-            if (filenameIt == disposition.params.end() ||
-                filenameIt->second.empty())
+            if (it == disposition.params.end() || it->second.empty())
             {
-                result["error"] = "The uploaded file must have a filename.";
+                result["error"] = "Uploaded file must have a filename.";
                 return jsonResponse(400, result);
             }
 
-            // Use the extension only to determine the accepted format.
-            std::filesystem::path originalName(filenameIt->second);
-            std::string extension = originalName.extension().string();
+            std::string extension =
+                std::filesystem::path(it->second).extension().string();
 
-            for (char& ch : extension)
-            {
-                ch = static_cast<char>(
-                    std::tolower(static_cast<unsigned char>(ch))
-                );
-            }
+            std::transform(
+                extension.begin(), extension.end(), extension.begin(),
+                [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
 
-            std::string expectedType;
+            const std::string& bytes = imagePart.body;
+            bool valid = false;
 
             if (extension == ".jpg" || extension == ".jpeg")
             {
-                expectedType = "image/jpeg";
-            }
-            else if (extension == ".png")
-            {
-                expectedType = "image/png";
-            }
-            else if (extension == ".webp")
-            {
-                expectedType = "image/webp";
-            }
-            else
-            {
-                result["error"] = "Only JPEG, PNG, and WebP images are accepted.";
-                return jsonResponse(400, result);
-            }
-
-            // Verify the file's actual signature, not just its extension.
-            const std::string& bytes = imagePart.body;
-            bool validImage = false;
-
-            if (expectedType == "image/jpeg")
-            {
-                validImage =
-                    bytes.size() >= 3 &&
+                valid = bytes.size() >= 3 &&
                     static_cast<unsigned char>(bytes[0]) == 0xFF &&
                     static_cast<unsigned char>(bytes[1]) == 0xD8 &&
                     static_cast<unsigned char>(bytes[2]) == 0xFF;
             }
-            else if (expectedType == "image/png")
+            else if (extension == ".png")
             {
                 const unsigned char signature[] = {
                     0x89, 0x50, 0x4E, 0x47,
                     0x0D, 0x0A, 0x1A, 0x0A
                 };
 
-                validImage = bytes.size() >= sizeof(signature);
+                valid = bytes.size() >= sizeof(signature);
 
                 for (std::size_t i = 0;
-                     validImage && i < sizeof(signature);
-                     ++i)
+                     valid && i < sizeof(signature); ++i)
                 {
-                    validImage =
+                    valid =
                         static_cast<unsigned char>(bytes[i]) == signature[i];
                 }
             }
-            else if (expectedType == "image/webp")
+            else if (extension == ".webp")
             {
-                validImage =
-                    bytes.size() >= 12 &&
+                valid = bytes.size() >= 12 &&
                     bytes.compare(0, 4, "RIFF") == 0 &&
                     bytes.compare(8, 4, "WEBP") == 0;
             }
-
-            if (!validImage)
+            else
             {
-                result["error"] = "The file contents do not match the image type.";
+                result["error"] = "Only JPEG, PNG, and WebP are accepted.";
                 return jsonResponse(400, result);
             }
 
-            // Generate a unique server-controlled filename.
-            const auto now =
-                std::chrono::steady_clock::now().time_since_epoch().count();
+            if (!valid)
+            {
+                result["error"] = "Image contents do not match file type.";
+                return jsonResponse(400, result);
+            }
 
-            const std::string savedFilename =
+            const auto now =
+                std::chrono::steady_clock::now()
+                    .time_since_epoch().count();
+
+            const std::string filename =
                 "vehicle_" + std::to_string(now) + extension;
 
-            const std::filesystem::path uploadDirectory =
-                std::filesystem::path(__FILE__).parent_path()
-                / "uploads" / "vehicles";
+            const auto directory = getUploadDirectory();
+            std::filesystem::create_directories(directory);
 
-            std::filesystem::create_directories(uploadDirectory);
-
-            const std::filesystem::path destination =
-                uploadDirectory / savedFilename;
-
+            const auto destination = directory / filename;
             std::ofstream output(
-                destination,
-                std::ios::binary | std::ios::out
-            );
+                destination, std::ios::binary | std::ios::out);
 
             if (!output)
             {
-                result["error"] = "The server could not save the image.";
+                result["error"] = "Could not save image.";
                 return jsonResponse(500, result);
             }
 
             output.write(
                 bytes.data(),
-                static_cast<std::streamsize>(bytes.size())
-            );
-
+                static_cast<std::streamsize>(bytes.size()));
             output.close();
 
             if (!output)
             {
                 std::filesystem::remove(destination);
-                result["error"] = "The image could not be saved completely.";
+                result["error"] = "Image was not saved completely.";
                 return jsonResponse(500, result);
             }
 
             result["message"] = "Image uploaded successfully.";
-            result["filename"] = savedFilename;
-            result["image_url"] =
-                "/uploads/vehicles/" + savedFilename;
-
+            result["filename"] = filename;
+            result["image_url"] = "/uploads/vehicles/" + filename;
             return jsonResponse(201, result);
         }
         catch (const std::exception& error)
@@ -577,7 +528,6 @@ int main()
             return jsonResponse(400, result);
         }
     });
-
 
     const int port = getPort();
 
