@@ -10,12 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Crow CONFIG REQUIRED)
 find_package(PostgreSQL REQUIRED)
 
-find_library(
-    PQXX_LIBRARY
-    NAMES pqxx
-    PATHS "/opt/homebrew/opt/libpqxx/lib"
-    REQUIRED
-)
+find_library(PQXX_LIBRARY NAMES pqxx REQUIRED)
 
 add_executable(vehicle_rental_api main.cpp)
 

@@ -1,0 +1,8 @@
+
+backend/build/
+build/
+.git/
+.DS_Store
+*.backup
+*.step1-backup
+*.pre-deploy-backup
