@@ -56,28 +56,18 @@ std::string getAllowedOrigin()
 
 void addCorsHeaders(crow::response& response)
 {
-    response.add_header(
-        "Access-Control-Allow-Origin", getAllowedOrigin());
-
-    response.add_header(
-        "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-
-    response.add_header(
-        "Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
-
+    response.add_header("Access-Control-Allow-Origin", getAllowedOrigin());
+    response.add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.add_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
     response.add_header("Vary", "Origin");
     response.add_header("X-Content-Type-Options", "nosniff");
 }
 
-// Apply CORS headers to every response, including preflight requests.
 struct CorsMiddleware
 {
     struct context {};
 
-    void before_handle(
-        crow::request& req,
-        crow::response& res,
-        context&)
+    void before_handle(crow::request& req, crow::response& res, context&)
     {
         if (req.method == crow::HTTPMethod::OPTIONS)
         {
@@ -87,17 +77,13 @@ struct CorsMiddleware
         }
     }
 
-    void after_handle(
-        crow::request&,
-        crow::response& res,
-        context&)
+    void after_handle(crow::request&, crow::response& res, context&)
     {
         addCorsHeaders(res);
     }
 };
 
-crow::response jsonResponse(
-    int status, const crow::json::wvalue& data)
+crow::response jsonResponse(int status, const crow::json::wvalue& data)
 {
     crow::response response(status);
     response.add_header("Content-Type", "application/json");
@@ -112,9 +98,7 @@ bool isAuthorizedAdmin(const crow::request& req)
     if (!expected || expected[0] == '\0')
         return false;
 
-    const std::string supplied =
-        req.get_header_value("X-Admin-Key");
-
+    const std::string supplied = req.get_header_value("X-Admin-Key");
     return !supplied.empty() && supplied == expected;
 }
 
@@ -129,9 +113,7 @@ std::filesystem::path getUploadDirectory()
         / "uploads" / "vehicles";
 }
 
-bool hasStringField(
-    const crow::json::rvalue& body,
-    const char* name)
+bool hasStringField(const crow::json::rvalue& body, const char* name)
 {
     return body.has(name) &&
         body[name].t() == crow::json::type::String;
@@ -149,9 +131,7 @@ int main()
 
         try
         {
-            pqxx::connection connection(
-                getDatabaseConnectionString());
-
+            pqxx::connection connection(getDatabaseConnectionString());
             pqxx::read_transaction transaction(connection);
             transaction.exec("SELECT 1");
 
@@ -162,8 +142,7 @@ int main()
         }
         catch (const std::exception& error)
         {
-            std::cerr << "Health check failed: "
-                      << error.what() << '\n';
+            std::cerr << "Health check failed: " << error.what() << '\n';
 
             result["status"] = "error";
             result["database"] = "unavailable";
@@ -178,9 +157,7 @@ int main()
     {
         try
         {
-            pqxx::connection connection(
-                getDatabaseConnectionString());
-
+            pqxx::connection connection(getDatabaseConnectionString());
             pqxx::read_transaction transaction(connection);
 
             const auto rows = transaction.exec(
@@ -197,32 +174,37 @@ int main()
                 vehicle["vehicle_code"] =
                     row["vehicle_code"].as<std::string>();
 
-                vehicle["brand"] =
-                    row["brand"].as<std::string>();
+                vehicle["brand"] = row["brand"].as<std::string>();
+                vehicle["model"] = row["model"].as<std::string>();
 
-                vehicle["model"] =
-                    row["model"].as<std::string>();
+                // category may be SQL NULL (e.g. Mahindra Furio 11).
+                if (row["category"].is_null())
+                    vehicle["category"] = nullptr;
+                else
+                    vehicle["category"] =
+                        row["category"].as<std::string>();
 
-                vehicle["category"] =
-                    row["category"].as<std::string>();
+                vehicle["daily_rate"] = row["daily_rate"].as<double>();
+                vehicle["is_available"] = row["is_available"].as<bool>();
+                vehicle["seats"] = row["seats"].as<int>();
 
-                vehicle["daily_rate"] =
-                    row["daily_rate"].as<double>();
+                // Preserve SQL NULL as JSON null rather than converting it to 0.
+                if (row["engine_cc"].is_null())
+                    vehicle["engine_cc"] = nullptr;
+                else
+                    vehicle["engine_cc"] = row["engine_cc"].as<int>();
 
-                vehicle["is_available"] =
-                    row["is_available"].as<bool>();
+                if (row["image_url"].is_null())
+                    vehicle["image_url"] = "";
+                else
+                    vehicle["image_url"] =
+                        row["image_url"].as<std::string>();
 
-                vehicle["seats"] =
-                    row["seats"].as<int>();
-
-                vehicle["engine_cc"] = row["engine_cc"].is_null()
-                    ? 0 : row["engine_cc"].as<int>();
-
-                vehicle["image_url"] = row["image_url"].is_null()
-                    ? "" : row["image_url"].as<std::string>();
-
-                vehicle["description"] = row["description"].is_null()
-                    ? "" : row["description"].as<std::string>();
+                if (row["description"].is_null())
+                    vehicle["description"] = "";
+                else
+                    vehicle["description"] =
+                        row["description"].as<std::string>();
 
                 vehicles.push_back(std::move(vehicle));
             }
@@ -235,8 +217,7 @@ int main()
         }
         catch (const std::exception& error)
         {
-            std::cerr << "Vehicle query failed: "
-                      << error.what() << '\n';
+            std::cerr << "Vehicle query failed: " << error.what() << '\n';
 
             crow::json::wvalue result;
             result["error"] = "Unable to retrieve vehicle listings.";
@@ -265,7 +246,9 @@ int main()
             if (!body ||
                 !hasStringField(body, "brand") ||
                 !hasStringField(body, "model") ||
-                !hasStringField(body, "category") ||
+                !body.has("category") ||
+                (!body["category"].is_null() &&
+                    body["category"].t() != crow::json::type::String) ||
                 !hasStringField(body, "image_url") ||
                 !hasStringField(body, "description") ||
                 !body.has("daily_rate") ||
@@ -278,10 +261,16 @@ int main()
 
             const std::string brand = body["brand"].s();
             const std::string model = body["model"].s();
-            const std::string category = body["category"].s();
+
+            const std::string category = body["category"].is_null()
+                ? "" : body["category"].s();
+
             const double dailyRate = body["daily_rate"].d();
             const int seats = body["seats"].i();
-            const int engineCC = body["engine_cc"].i();
+
+            const int engineCC = body["engine_cc"].is_null()
+                ? 0 : body["engine_cc"].i();
+
             const std::string imageURL = body["image_url"].s();
             const std::string description = body["description"].s();
 
@@ -294,7 +283,8 @@ int main()
                 return jsonResponse(400, result);
             }
 
-            if (category != "Car" && category != "Bike" &&
+            if (!category.empty() &&
+                category != "Car" && category != "Bike" &&
                 category != "SUV" && category != "Van")
             {
                 result["error"] = "Invalid vehicle category.";
@@ -318,24 +308,21 @@ int main()
 
             const std::string vehicleCode =
                 "VR-" + std::to_string(
-                    std::chrono::duration_cast<
-                        std::chrono::milliseconds>(
-                        std::chrono::system_clock::now()
-                            .time_since_epoch()).count());
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()
+                    ).count());
 
-            pqxx::connection connection(
-                getDatabaseConnectionString());
-
+            pqxx::connection connection(getDatabaseConnectionString());
             pqxx::work transaction(connection);
 
             transaction.exec_params(
                 "INSERT INTO vehicles "
                 "(vehicle_code, brand, model, category, daily_rate, "
                 "seats, engine_cc, image_url, description, is_available) "
-                "VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, 0), "
-                "$8, $9, TRUE)",
-                vehicleCode, brand, model, category, dailyRate,
-                seats, engineCC, imageURL, description);
+                "VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, "
+                "NULLIF($7, 0), $8, $9, TRUE)",
+                vehicleCode, brand, model, category,
+                dailyRate, seats, engineCC, imageURL, description);
 
             transaction.commit();
 
@@ -346,11 +333,9 @@ int main()
         }
         catch (const std::exception& error)
         {
-            std::cerr << "Vehicle creation failed: "
-                      << error.what() << '\n';
+            std::cerr << "Vehicle creation failed: " << error.what() << '\n';
 
             result["error"] = "Could not create vehicle.";
-
             return jsonResponse(400, result);
         }
     });
@@ -374,9 +359,7 @@ int main()
 
             if (req.body.size() > maxImageSize + 64 * 1024)
             {
-                result["error"] =
-                    "Request too large; image limit is 5 MB.";
-
+                result["error"] = "Request too large; image limit is 5 MB.";
                 return jsonResponse(413, result);
             }
 
@@ -386,9 +369,7 @@ int main()
             if (imagePart.body.empty() ||
                 imagePart.body.size() > maxImageSize)
             {
-                result["error"] =
-                    "Missing image or image exceeds 5 MB.";
-
+                result["error"] = "Missing image or image exceeds 5 MB.";
                 return jsonResponse(413, result);
             }
 
@@ -399,9 +380,7 @@ int main()
 
             if (it == disposition.params.end() || it->second.empty())
             {
-                result["error"] =
-                    "Uploaded file must have a filename.";
-
+                result["error"] = "Uploaded file must have a filename.";
                 return jsonResponse(400, result);
             }
 
@@ -449,23 +428,18 @@ int main()
             }
             else
             {
-                result["error"] =
-                    "Only JPEG, PNG, and WebP are accepted.";
-
+                result["error"] = "Only JPEG, PNG, and WebP are accepted.";
                 return jsonResponse(400, result);
             }
 
             if (!valid)
             {
-                result["error"] =
-                    "Image contents do not match file type.";
-
+                result["error"] = "Image contents do not match file type.";
                 return jsonResponse(400, result);
             }
 
             const auto now =
-                std::chrono::steady_clock::now()
-                    .time_since_epoch().count();
+                std::chrono::steady_clock::now().time_since_epoch().count();
 
             const std::string filename =
                 "vehicle_" + std::to_string(now) + extension;
@@ -485,18 +459,13 @@ int main()
             }
 
             output.write(
-                bytes.data(),
-                static_cast<std::streamsize>(bytes.size()));
-
+                bytes.data(), static_cast<std::streamsize>(bytes.size()));
             output.close();
 
             if (!output)
             {
                 std::filesystem::remove(destination);
-
-                result["error"] =
-                    "Image was not saved completely.";
-
+                result["error"] = "Image was not saved completely.";
                 return jsonResponse(500, result);
             }
 
@@ -508,11 +477,9 @@ int main()
         }
         catch (const std::exception& error)
         {
-            std::cerr << "Image upload failed: "
-                      << error.what() << '\n';
+            std::cerr << "Image upload failed: " << error.what() << '\n';
 
             result["error"] = "The upload could not be processed.";
-
             return jsonResponse(400, result);
         }
     });
@@ -541,9 +508,7 @@ int main()
             }
         }
 
-        const std::filesystem::path path =
-            getUploadDirectory() / filename;
-
+        const std::filesystem::path path = getUploadDirectory() / filename;
         std::ifstream file(path, std::ios::binary);
 
         if (!file)

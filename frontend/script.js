@@ -2,7 +2,6 @@
 "use strict";
 
 // Set window.VELORENT_API_URL in frontend/config.js for deployment.
-// Example: "https://your-backend.onrender.com"
 // Local development uses the C++ backend on port 18080.
 const API_SERVER_URL = (
   window.VELORENT_API_URL || "http://localhost:18080"
@@ -41,64 +40,41 @@ function adminHeaders(extraHeaders = {}) {
   };
 }
 
-// Presentation information not yet stored in the database.
-// Vehicle prices, names, categories and availability come from the API.
+// Presentation-only information.
+// Inventory data such as names, prices, categories, seats,
+// engine capacity and descriptions comes from the API.
 const vehiclePresentation = {
   "DEMO-CAR-001": {
-    seats: 5,
-    engineCC: null,
-    description: "A practical compact car for everyday city travel.",
     image: "https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?auto=format&fit=crop&w=900&q=80",
     icon: "🚗"
   },
   "DEMO-CAR-002": {
-    seats: 5,
-    engineCC: null,
-    description: "A comfortable hatchback for daily journeys.",
     image: "https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=900&q=80",
     icon: "🚗"
   },
   "DEMO-SUV-001": {
-    seats: 5,
-    engineCC: null,
-    description: "A versatile SUV for family trips and weekend drives.",
     image: "https://images.unsplash.com/photo-1519641471654-76ce0107ad1b?auto=format&fit=crop&w=900&q=80",
     icon: "🚙"
   },
   "DEMO-SUV-002": {
-    seats: 7,
-    engineCC: null,
-    description: "A spacious SUV for group travel and longer routes.",
     image: "https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?auto=format&fit=crop&w=900&q=80",
     icon: "🚙"
   },
   "DEMO-BIKE-001": {
-    seats: 2,
-    engineCC: 110,
-    description: "An easy-to-use scooter for local trips.",
     image: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&w=900&q=80",
-    icon: "🛵"
+    icon: "🏍️"
   },
   "DEMO-BIKE-002": {
-    seats: 2,
-    engineCC: 350,
-    description: "A classic-style motorcycle for leisure rides.",
     image: "https://images.unsplash.com/photo-1558981403-c5f9899a28bc?auto=format&fit=crop&w=900&q=80",
     icon: "🏍️"
   },
   "DEMO-CAR-003": {
-    seats: 5,
-    engineCC: null,
-    description: "A compact SUV for daily travel and family outings.",
     image: "https://images.unsplash.com/photo-1511919884226-fd3cad34687c?auto=format&fit=crop&w=900&q=80",
-    icon: "🚙"
+    icon: "🏎️"
   },
   "DEMO-VAN-001": {
-    seats: 12,
-    engineCC: null,
-    description: "A people carrier for group outings and travel.",
     image: "https://images.unsplash.com/photo-1519003722824-194d4455a60c?auto=format&fit=crop&w=900&q=80",
-    icon: "🚐"
+    icon: "🚚"
   }
 };
 
@@ -156,14 +132,18 @@ function mapApiVehicle(apiVehicle) {
     code,
     brand: apiVehicle.brand,
     model: apiVehicle.model,
-    category: apiVehicle.category,
+    category: apiVehicle.category ?? null,
     price: Number(apiVehicle.daily_rate),
     isAvailable: apiVehicle.is_available === true,
-    seats: apiVehicle.seats ?? presentation.seats ?? 5,
-    engineCC: apiVehicle.engine_cc ?? presentation.engineCC ?? null,
+
+    // The database is the source of truth for specifications.
+    seats: apiVehicle.seats,
+    engineCC: apiVehicle.engine_cc ?? null,
+
     description:
-      apiVehicle.description || presentation.description ||
+      apiVehicle.description ||
       "Contact us for more information about this vehicle.",
+
     image,
     icon: presentation.icon || "🚘"
   };
@@ -250,6 +230,8 @@ function showToast(message) {
 
 function getFilteredVehicles() {
   let filtered = vehicles.filter((vehicle) => {
+    // Vehicles with NULL categories remain visible under All.
+    // They are not included in any specific category filter.
     const matchesCategory =
       state.category === "All" ||
       vehicle.category === state.category;
@@ -258,8 +240,8 @@ function getFilteredVehicles() {
       vehicle.code,
       vehicle.brand,
       vehicle.model,
-      vehicle.category,
-      vehicle.description
+      vehicle.category || "",
+      vehicle.description || ""
     ].join(" ").toLowerCase();
 
     const matchesSearch = searchableText.includes(
@@ -308,9 +290,13 @@ function createVehicleCard(vehicle) {
     imageWrap.appendChild(image);
   }
 
-  const categoryTag = document.createElement("span");
-  categoryTag.className = "category-tag";
-  categoryTag.textContent = vehicle.category;
+  // Do not render a category badge when the database category is NULL.
+  if (vehicle.category) {
+    const categoryTag = document.createElement("span");
+    categoryTag.className = "category-tag";
+    categoryTag.textContent = vehicle.category;
+    imageWrap.appendChild(categoryTag);
+  }
 
   const availabilityTag = document.createElement("span");
   availabilityTag.className = "availability-tag";
@@ -318,7 +304,7 @@ function createVehicleCard(vehicle) {
     ? "Available"
     : "Unavailable";
 
-  imageWrap.append(categoryTag, availabilityTag);
+  imageWrap.appendChild(availabilityTag);
 
   const content = document.createElement("div");
   content.className = "vehicle-card-content";
@@ -348,12 +334,19 @@ function createVehicleCard(vehicle) {
   const specs = document.createElement("div");
   specs.className = "vehicle-specs";
 
-  const seats = document.createElement("span");
-  seats.className = "vehicle-spec";
-  seats.textContent = `${vehicle.seats} seats`;
-  specs.appendChild(seats);
+  if (vehicle.seats !== null && vehicle.seats !== undefined) {
+    const seats = document.createElement("span");
+    seats.className = "vehicle-spec";
+    seats.textContent = `${vehicle.seats} seats`;
+    specs.appendChild(seats);
+  }
 
-  if (vehicle.engineCC !== null) {
+  // Hide engine capacity when the database value is NULL.
+  if (
+    vehicle.engineCC !== null &&
+    vehicle.engineCC !== undefined &&
+    vehicle.engineCC !== ""
+  ) {
     const engine = document.createElement("span");
     engine.className = "vehicle-spec";
     engine.textContent = `${vehicle.engineCC} cc`;
@@ -733,11 +726,14 @@ addVehicleForm.addEventListener("submit", async (event) => {
 
     if (!uploadResponse.ok) {
       throw new Error(
-        uploadResult.error || `Image upload failed (HTTP ${uploadResponse.status}).`
+        uploadResult.error ||
+        `Image upload failed (HTTP ${uploadResponse.status}).`
       );
     }
 
     uploadedImageURL = uploadResult.image_url;
+
+    const engineValue = String(formData.get("engine_cc") || "").trim();
 
     const vehicleData = {
       brand: formData.get("brand").trim(),
@@ -745,7 +741,7 @@ addVehicleForm.addEventListener("submit", async (event) => {
       category: formData.get("category"),
       daily_rate: Number(formData.get("daily_rate")),
       seats: Number(formData.get("seats")),
-      engine_cc: Number(formData.get("engine_cc")) || 0,
+      engine_cc: engineValue ? Number(engineValue) : null,
       description: formData.get("description").trim(),
       image_url: uploadedImageURL
     };
@@ -769,7 +765,8 @@ addVehicleForm.addEventListener("submit", async (event) => {
 
     if (!response.ok) {
       throw new Error(
-        result.error || `Could not save vehicle (HTTP ${response.status}).`
+        result.error ||
+        `Could not save vehicle (HTTP ${response.status}).`
       );
     }
 

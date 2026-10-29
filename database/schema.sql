@@ -7,8 +7,11 @@ CREATE TABLE IF NOT EXISTS vehicles (
     vehicle_code VARCHAR(20) UNIQUE NOT NULL,
     brand VARCHAR(80) NOT NULL,
     model VARCHAR(100) NOT NULL,
-    category VARCHAR(20) NOT NULL
-        CHECK (category IN ('Car', 'Bike', 'SUV', 'Van')),
+    category VARCHAR(20)
+        CHECK (
+            category IS NULL
+            OR category IN ('Car', 'Bike', 'SUV', 'Van')
+        ),
     daily_rate NUMERIC(10, 2) NOT NULL
         CHECK (daily_rate >= 0),
     seats INTEGER NOT NULL DEFAULT 2
