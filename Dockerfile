@@ -14,6 +14,10 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+    RUN dpkg-query -W libpqxx-dev libpqxx-7.10 libpqxx-6.4 2>/dev/null || true \
+    && dpkg -L libpqxx-dev | grep -E 'pqxx/(pqxx|version.hxx)|libpqxx\.so' \
+    && ldconfig -p | grep libpqxx
+    
 # Build and install Crow for Linux
 RUN git clone --depth 1 https://github.com/CrowCpp/Crow.git /tmp/Crow \
     && cmake -S /tmp/Crow -B /tmp/Crow/build \
