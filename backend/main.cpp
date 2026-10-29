@@ -176,7 +176,7 @@ int main()
         }
     });
 
-    // Retrieve vehicles, including nullable database fields.
+    // Retrieve vehicles
     CROW_ROUTE(app, "/api/vehicles")
     ([]
     {
@@ -298,8 +298,17 @@ int main()
             const bool categoryIsNull =
                 isJsonNull(body["category"]);
 
-            const std::string category = categoryIsNull
-                ? "" : body["category"].s();
+            std::string category;
+            if (!categoryIsNull)
+            {
+                if (!hasStringField(body, "category"))
+                {
+                    result["error"] = "Invalid vehicle category.";
+                    return jsonResponse(400, result);
+                }
+
+                category = body["category"].s();
+            }
 
             const double dailyRate = body["daily_rate"].d();
             const int seats = body["seats"].i();
@@ -307,8 +316,17 @@ int main()
             const bool engineIsNull =
                 isJsonNull(body["engine_cc"]);
 
-            const int engineCC = engineIsNull
-                ? 0 : body["engine_cc"].i();
+            int engineCC = 0;
+            if (!engineIsNull)
+            {
+                if (body["engine_cc"].t() != crow::json::type::Number)
+                {
+                    result["error"] = "Invalid engine capacity.";
+                    return jsonResponse(400, result);
+                }
+
+                engineCC = body["engine_cc"].i();
+            }
 
             const std::string imageURL = body["image_url"].s();
             const std::string description = body["description"].s();
@@ -388,7 +406,7 @@ int main()
         }
     });
 
-    // Update an existing vehicle.
+    // Update vehicle
     CROW_ROUTE(app, "/api/vehicles/<string>")
         .methods(crow::HTTPMethod::PUT)
     ([](const crow::request& req, const std::string& vehicleCode)
@@ -426,8 +444,17 @@ int main()
             const bool categoryIsNull =
                 isJsonNull(body["category"]);
 
-            const std::string category = categoryIsNull
-                ? "" : body["category"].s();
+            std::string category;
+            if (!categoryIsNull)
+            {
+                if (!hasStringField(body, "category"))
+                {
+                    result["error"] = "Invalid vehicle category.";
+                    return jsonResponse(400, result);
+                }
+
+                category = body["category"].s();
+            }
 
             const double dailyRate = body["daily_rate"].d();
             const int seats = body["seats"].i();
@@ -435,8 +462,17 @@ int main()
             const bool engineIsNull =
                 isJsonNull(body["engine_cc"]);
 
-            const int engineCC = engineIsNull
-                ? 0 : body["engine_cc"].i();
+            int engineCC = 0;
+            if (!engineIsNull)
+            {
+                if (body["engine_cc"].t() != crow::json::type::Number)
+                {
+                    result["error"] = "Invalid engine capacity.";
+                    return jsonResponse(400, result);
+                }
+
+                engineCC = body["engine_cc"].i();
+            }
 
             const std::string imageURL = body["image_url"].s();
             const std::string description = body["description"].s();
